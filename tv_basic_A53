@@ -1,0 +1,668 @@
+#!/bin/csh 
+echo "xx post layout sim using current using post/set.v_local ,if it's not exist ,using src/set.v"
+echo "xx RTL sim using cur_sim_dir/set.v,if it's not exist,using src/set.v" 
+#######################################################################
+# ENV
+#######################################################################
+#tool,google protocol buffer for A53 tarmac
+setenv LD_LIBRARY_PATH /file/pub/aw1689/digital/netlist/google_protocal_buffers:${LD_LIBRARY_PATH}:.:/tools/cds/ius57/tools.lnx86/lib/64bit/SuSE
+#novas fsdb dump
+setenv LD_LIBRARY_PATH ${LD_LIBRARY_PATH}:${VERDI_PATH}/share/PLI/VCS/LINUX64
+setenv NOVAS_PLI_DIR ${VERDI_PATH}/share/PLI/VCS/LINUX64
+#A53 tarmac
+setenv CA53_TARMAC_EXECUTABLE "/file/pub/aw1689/digital/netlist/tarmac/ca53univent/build_x86_32/bin/ca53_tarmac_decode --plain"
+setenv PATH $project_dir/hdl/ac643/ca53univent/build_x86_32/bin:$PATH
+
+setenv eis_on          "eis_onstring"
+setenv eis_reg_on      "eis_reg_on"
+setenv ecs_trace_on    "eis_reg_on"
+##################################################################
+# Argument define
+##################################################################
+set pattern_list_file 	= "list"
+set pattern_list
+set PATTERN
+set cur_sim_dir       	= `date +%m-%d-%H_%M_%S`
+set fsdb_define
+set vcs_sim           	= FALSE
+set AllTestList
+set starttime
+set fsdb_dump
+set SIM_WAY		= ""
+set post_sim 		= ""
+set POST_DIR 		= "post"
+set debussy           	= FALSE
+set NC_GUI            	= FALSE
+set RUN_WITHOUT_COMPILE = FALSE
+set pli_command         = ""
+set sim_ac643_dir     	= ""
+set sim_define        	= ""
+set gpu_file          	= ""
+set gpu_cmd           	= ""
+set verilogDefine       = ""
+set gold_run
+set post_log         	= "pre"
+set last_sim_dir        = ""
+# pattern stuff -------------------------
+set jtag_flist		= ""
+set RUN_JTAG		= FALSE
+##################################################################
+## Help & Argument process
+##################################################################
+if ("$1" == "") then
+cat <<EOF
+Usage:
+  Compiles and runs simulations .
+
+-post          		Post layout simulation
+-fsdb 	 		Wave dump valid
+-l		        pattern list file(list)
+-d  dir 		temporary file dir
+-gui			verdi
++gui                    ncverilog +gui
+-vcs			vcs run
+-R			Simulate using the last ncelab generated snapshot
+-jtag			run jtag test
+
+Examples: 
+  $0 -clear	Remove all the temporary files
+  $0 gpio ccm	Run the pattern store in directories sim/pattern/gpio and sim/pattern/ccm
+  $0 -post ccm	Run post-layout simulation with the pattern store in directories sim/pattern/ccm
+
+
+EOF
+##################################################################
+# argument process
+##################################################################
+else 
+  while ($#argv)
+    switch ("$1")
+      case "-clear":
+	rm novas*  >& /dev/null
+	rm novas* -fr >& /dev/null
+	rm ncverilog* >& /dev/null
+	rm *.hex >& /dev/null
+	rm INCA_libs -fr >& /dev/null
+	rm wave.shm -fr >& /dev/null
+	rm *txt >& /dev/null
+#	rm verdiLog -fr >& /dev/null
+	rm *~  >& /dev/null
+	rm log -fr  >& /dev/null
+	rm restore* >& /dev/null
+        exit(0)
+      case "-clean":
+	rm *-*-* -fr >& /dev/null
+  	exit(0)	
+      case "-jtag":
+	echo "xx Run JTAG---------"
+	set jtag_flist = "\
+			$project_dir/../swjim/BSTMon.v \
+			$project_dir/../swjim/SWDriver.v \
+			$project_dir/../swjim/SWIM.v \
+			$project_dir/../swjim/SWJIMCtl.v \
+			$project_dir/../swjim/SWJIMMux.v \
+			$project_dir/../swjim/SWJIM.v \
+			$project_dir/../swjim/WIDefines.v \
+			$project_dir/../swjim/WiProtocolEngine.v \
+			$project_dir/../swjim/WireControl.v \
+			$project_dir/../swjim/WireInterface.v \
+			$project_dir/../armBST/RH_Linux_x86_64/armBST.v \
+			"
+	set RUN_JTAG = TRUE		
+ 	shift
+	breaksw
+      case "-d":
+        set cur_sim_dir = $2 
+        set POST_DIR    = $2
+        shift 
+        shift 
+        breaksw
+      case "-R":
+	set RUN_WITHOUT_COMPILE = TRUE
+        shift
+        breaksw
+      case "-gui" : 
+        set debussy  = TRUE
+        shift
+        breaksw
+      case "+gui" :
+        set NC_GUI  = TRUE
+        shift
+        breaksw
+      case "-pa":
+	echo "xx post lay out sim, all"
+        set SIM_WAY = "post_all_sim"
+	set post_log = "post"
+	set post_sim = "1"
+	set vcs_sim = TRUE
+        shift
+        breaksw
+      case "-pc":
+	echo "xx post lay out sim, only cpu"
+        set SIM_WAY = "post_cpu_sim"
+	set post_log = "post"
+	set post_sim = "1"
+	set vcs_sim = TRUE
+        shift
+        breaksw
+      case "-fsdb":
+        set fsdb_dump = TRUE
+        shift
+        breaksw
+      case "-vcs":
+        set vcs_sim = TRUE
+        shift
+        breaksw
+      case "-l*":
+        set pattern_list_file = $2
+	set gold_run = TRUE
+        shift
+	shift
+        breaksw
+      case "-*":
+	echo "xx [$1] is not support,please check!"
+	exit(0)
+      case "+define"
+	set verilogDefine = "+define+$2 $verilogDefine"
+	shift
+	shift
+	breaksw
+      default:
+	set PATTERN="$1 $PATTERN"
+	shift
+	breaksw
+    endsw
+    end
+endif
+##################################################################
+## remove unuseful sim dir
+##################################################################
+foreach item (`find 0* -depth -name "wave\.shm"`)
+ if ((`ls $item` == "")&&!(-e $item/../LOCK)) then
+	rm $item/../../ -fr
+	echo "xx rm $item/../../"
+ endif
+end
+
+foreach dd (`ls |grep 0`)
+ if (`ls $dd` == "") then
+	rm $dd -fr
+	echo "xx rm $dd "
+ endif
+end
+
+##################################################################
+## sim dir and pattern test list
+##################################################################
+#if !(-e sim.v) \ln -s $sim_root/src/sim.v  sim.v	
+#if !(-e init_mem.v) \ln -s $sim_root/src/init_mem.v init_mem.v
+#if !(-e set_sdr.v) \ln -s $sim_root/src/set_sdr.v  set_sdr.v
+#if !(-e set.v) \cp src/set.v set.v
+#if !(-e sim_include.v) \ln -s  $sim_root/src/sim_include.v  sim_include.v 
+if !(-d log) \mkdir log
+if !(-e ${post_log}_result.log) then
+	echo "" > ${post_log}_result.log
+endif
+
+if ($gold_run == TRUE) then
+    if !(-e $pattern_list_file) then
+	find pattern -ignore_readdir_race -name "*basic.txt"  |sed 's/pattern\///'| sed 's/\/[Aa][Ww]16..[-_]basic\.txt//'|sort > pattern/plist
+	echo "xx generate pattern/plist"
+	my_pattern_list_sort pattern/plist > $pattern_list_file
+	echo "xx generate $pattern_list_file"
+    endif
+    set pattern_list=`grep -v \# $pattern_list_file`
+endif
+
+set AllTestList="$pattern_list $PATTERN "
+echo "xx PATTERN: $AllTestList"
+
+##################################################################
+#  Loop start/pre and post sim
+##################################################################
+if($RUN_WITHOUT_COMPILE == FALSE) then
+  foreach test ($AllTestList) 
+	set testname = ` echo "$test" | sed -e 's/^pattern\///' -e 's/\/$//' -e 's/\//_/g' `
+	set testDir = ` echo "$test" | sed -e 's/^pattern\///' `
+	if (`ls $sim_root/pattern/${testDir}/` == "") then
+	  cd $sim_root
+    	  echo "xx pattern/${testDir}	not exist!" 
+	  continue
+	else
+##################################################
+#  make current dir / set.v 
+##################################################
+	if ("$post_sim" == "1") then 
+	    echo "${POST_DIR}" > $sim_root/temp
+	    echo "xx write ${POST_DIR} to temp"
+	    mkdir -p $sim_root/${POST_DIR}
+	    cd $sim_root/${POST_DIR}
+	    echo "" >LOCK
+	    echo "xx lock ${POST_DIR} dir"
+	    echo "xx run simulation in ${POST_DIR}"
+	    if !(-d ${testname}-wave.shm) \mkdir ${cur_sim_dir}_${testname}-wave.shm
+            if !(-e set.v_local) then
+		cp $sim_root/src/set.v ./set.v_local
+		echo "xx set.v using src/set.v"
+	    else
+		echo "xx set.v using ./set.v"
+	    endif
+	    cat set.v_local |sed "s/wave\.shm/${cur_sim_dir}_${testname}-wave\.shm/" > set.v
+	else
+	    echo "$cur_sim_dir/${testname}" > $sim_root/temp
+	    echo "xx write $cur_sim_dir/${testname} to temp"
+	    mkdir -p $sim_root/$cur_sim_dir/${testname}
+	    cd $sim_root/$cur_sim_dir/${testname}
+	    echo "" > LOCK
+	    echo "xx lock $cur_sim_dir/${testname} dir"
+            if !(-e ../set.v) then
+		cp $sim_root/src/set.v ./
+		echo "xx set.v using src/set.v"
+	    else
+		cp ../set.v ./
+                echo "xx set.v using $sim_root/$cur_sim_dir/set.v"
+	    endif
+	    if !(-d wave.shm) \mkdir wave.shm 
+	endif
+
+	if ($RUN_JTAG == TRUE) then
+	    echo "xx add set_dap file------------------"
+	    if (`grep  "set_dap" set.v` == "")  then
+	        echo '`include "set_dap.v"' >> set.v
+	    endif
+	else
+	    echo "xx remove set_dap.v -----------------"
+	    cat set.v |grep -v "set_dap" > set.v_tmp
+	    mv set.v_tmp set.v
+	endif
+
+
+##################################################
+#  files for current dir
+##################################################
+	# if pattern has set.v  ,then the set.v is pattern's not system's
+	cp $sim_root/src/ram.hex ./
+	cp $sim_root/src/rom.hex ./
+	cp $sim_root/src/cpu0int.hex ./
+
+	#cp $sim_root/pattern/${testDir}/ram.hex  ./ 
+	#cp $sim_root/pattern/${testDir}/sdram.hex  ./ 
+	#cp $sim_root/pattern/${testDir}/rama2.hex  -t ./ 
+	#cp $sim_root/pattern/${testDir}/*txt -t ./
+	cp $sim_root/pattern/${testDir}/* -t ./
+
+
+	cat set.v | sed -e 's/^\/\/.*//g' > config.v
+	## Generate Simulation Models 
+        if (-e sim_model.v) \rm sim_model.v
+		echo "// Simulation Models" > sim_model.v 
+	if(`grep "set_sdr.v" config.v` != "") then
+           	echo '`include "../model/sdram.v"'>> sim_model.v
+  	   	\cp $sim_root/src/set_sdr.v .
+		$sim_root/src/draminit.csh
+		echo "xx convert sdram to unix"
+	endif 
+        if(`grep "set_gmac.v" config.v` != "") then
+              \cp $sim_root/src/set_gmac.v .
+        endif
+        if(`grep "set_nand*.v" config.v` != "")  then
+           	echo '`include "../model/mdl_nand/mdl_nand.v"'>> sim_model.v
+           	\cp $sim_root/src/set_nand.v .
+	endif 
+        if(`grep "set_spi*.v" config.v` != "")  then
+           	echo '`include "../model/mdl_spi/spi_mdl.v"'>> sim_model.v
+           	\cp $sim_root/src/set_spi.v .
+	endif 
+        if(`grep "set_i2c*.v" config.v` != "")  then
+           	echo '`include "../model/Ver_I2C_eeprom/IICslave.v"'>> sim_model.v
+           	\cp $sim_root/src/set_i2c.v .
+	endif 
+        if(`grep "set_key.v" config.v` != "")  then
+           	echo '`include "../model/keypad_ghost.v"'>> sim_model.v
+	endif 
+        if(`grep "set_msc.v" config.v` != "")  then
+           	echo '`include "../model/msc.v"'>> sim_model.v
+           	\cp $sim_root/src/set_msc.v .
+	endif 
+        if(`grep "set_sdc.v" config.v` != "")  then
+           	echo '`include "../model/mmc.v"'>> sim_model.v
+           	\cp $sim_root/src/set_sdc.v .
+	endif 
+        if(`grep "set_ide.v" config.v` != "")  then
+           	echo '`include "../model/ata_device.v"'>> sim_model.v
+           	\cp $sim_root/src/set_ide.v .
+	endif 
+        if(`grep "set_usb.v" config.v` != "")  then
+           	\cp $sim_root/src/set_usb.v .
+	endif 
+        if(`grep "set_ts.v" config.v` != "")  then
+           	echo '`include "../model/ts_model.v"'>> sim_model.v
+           	\cp $sim_root/src/set_ts.v .
+	endif 
+        if(`grep "set_gps.v" config.v` != "")  then
+              echo '`include "../model/gps_rf/HVS_GPS_rf_sim.v"'>> sim_model.v
+              \cp $sim_root/src/set_gps.v .
+              \cp ../lib/rom/ROM_128x32.rom.v .
+        endif
+        if(`grep "rsb_s" config.v` != "")  then
+              echo '`include "../model/rsb_s.v"'>> sim_model.v
+        endif 
+        if(`grep "pmu_i2c_slave" config.v` != "")  then
+              echo '`include "../model/pmu_i2c_slave/pmu_i2c_slave.v"'>> sim_model.v
+              echo '`include "../model/pmu_i2c_slave/TSMC25DGT.v"'>> sim_model.v
+        endif
+        if(`grep "pptwi_slave" config.v` != "")  then
+              echo '`include "../model/pptwi_slave.v"'>> sim_model.v
+        endif
+        if(`grep "vm_aw1636" config.v` != "")  then
+              echo '`include "../model/vm_aw1636.v"'>> sim_model.v
+        endif
+	## Generate Simulation Pattern 
+        if(`grep -i "MICE" config.v` != "")  then
+           	echo '`include "../model/mice.v"'>> sim_model.v
+        	if (-e command.pat) \rm command.pat
+		$project_dir/model/micecc $sim_root/test.pat > command.pat
+		echo "xx MICE"
+	endif 
+        if(`grep "BROM_TEST" config.v` != "") then
+                   \cp ../lib/rom/BROM.rom.v .
+                   \cp ../lib/rom/BROM8K_verilog.rcf .
+        endif
+        if(`grep "VE_ACC_NOT_EXIST" config.v` == "") then
+                   \cp ../lib/rom/huff*.rom.v .
+        endif
+##################################################
+#  fsdb 
+##################################################
+	if ($fsdb_dump == TRUE) then
+	    set fsdb_define     = '+define+VCS_RUN'
+	endif
+
+##################################################
+# sim_ac643_dir
+##################################################
+	if(`grep "AC643_UNPROT" config.v` != "" )  then
+	    set sim_ac643_dir = "\
+        +incdir+$project_dir/hdl/ac643/ \
+        +incdir+$project_dir/hdl/ac643/ca53biu/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53cti/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53dcu/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53dpu/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53etm/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53gic/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53gov/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53ifu/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53scu/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53stb/verilog \
+        +incdir+$project_dir/hdl/ac643/ca53tlb/verilog \
+        +incdir+$project_dir/hdl/ac643/cortexa53/verilog \
+        +incdir+$project_dir/hdl/ac643/cxapbasyncbridge_core2cpu/verilog \
+        +incdir+$project_dir/hdl/ac643/cxapbic_2s1m \
+        +incdir+$project_dir/hdl/ac643/cxntsasyncbridge_core2cpu/verilog \
+        +incdir+$project_dir/hdl/ac643/cxtsd/verilog \
+        +incdir+$project_dir/hdl/ac643/gic400/verilog \
+        +incdir+$project_dir/hdl/ac643/models/cells/generic \
+        +incdir+$project_dir/hdl/ac643/models/rams/s40 \
+        +incdir+$project_dir/hdl/ac643/rambist \
+        +incdir+$project_dir/hdl/ac643/shared/verilog \
+        +incdir+$project_dir/hdl/ac643/cs_top \
+        +incdir+$project_dir/hdl/ac643/cxdapahbap/verilog \
+        +incdir+$project_dir/hdl/ac643/cxdapapbap/verilog \
+        +incdir+$project_dir/hdl/ac643/cxdapbusic_apbahb/verilog \
+        +incdir+$project_dir/hdl/ac643/cxdapswjdp/verilog \
+        +incdir+$project_dir/hdl/ac643/cxtse/verilog \
+        +incdir+$project_dir/hdl/ac643/cxtsintp_ts/verilog \
+        +incdir+$project_dir/hdl/ac643/timestamp \
+	    "
+	else
+	    if($vcs_sim == TRUE )  then
+		set sim_ac643_dir = " +incdir+$project_dir/hdl/ac643_vcs"
+	    else
+		set sim_ac643_dir = " +incdir+$project_dir/hdl/ac643_p"
+	    endif
+	endif
+
+	if(`grep "AR100_UNPROT" config.v` != "" )  then
+	    set sim_ar100_dir = " +incdir+$project_dir/hdl/ar100 "
+	else
+	    set sim_ar100_dir = " +incdir+$project_dir/hdl/ar100_p"
+	endif
+
+##################################################
+###########  netlist_sim      ############
+##################################################
+
+          if ("$post_sim" == "1") then
+		set sim_command = "vcs -line +cli+3 -R +v2k -negdelay -P ${NOVAS_PLI_DIR}/novas.tab ${NOVAS_PLI_DIR}/pli.a $pli_command -Marchive -full64 +systemverilogext+.sv -timescale=1ns/10ps "
+		cp ${sim_root}/src/vcs.timing.tfile .
+
+#	    if(`grep "define AC327_RTL" config.v` != "" ) then
+#		  set sim_ac643_dir = " +incdir+$project_dir/hdl/ac643_vcs"
+#		  echo "instance {sim.$project.u_core.u_cpu} {noTiming};" >> vcs.timing.tfile
+#		  echo "tree (0) {ac643_subsystem} {noTiming};" >> vcs.timing.tfile
+#	    endif
+
+		switch ("$project")
+		case "aw1689" :
+			if($SIM_WAY == "post_all_sim") then
+                                set sim_define1 = "+define+VCS_RUN +define+POST_LAYOUT_SIM +no_notifier +vcs+initmem+0 +vcs+initreg+0 +sdfverbose -sdfretain +neg_tchk +optconfigfile+vcs.tim
+ing.tfile"
+                        else if($SIM_WAY == "post_cpu_sim") then
+                                set sim_define1 = "+define+VCS_RUN +define+POST_CPU +no_notifier  +notimingcheck +vcs+initmem+0 +vcs+initreg+0 +sdfverbose -sdfretain +neg_tchk"
+                        else
+                                echo "xx check post layout sim mode"
+                                exit(0)
+                        endif
+                        breaksw
+		endsw
+
+                if(`grep "define POST_LAYOUT_SIM_PWR" config.v` != "" )  then
+                        set sim_define2 = " +define+POWER_PINS +nowarn+MEMODR "
+                	set sim_library = "$power_sim_library"
+                else
+                        set sim_define2 = " +nowarn+MEMODR "
+                	set sim_library = "$post_sim_library"
+                endif
+
+##################################################
+###########  RTL_sim          ############
+##################################################
+	  else
+	    if($vcs_sim == TRUE )  then
+                set sim_command = "vcs +define+VCS_RUN $verilogDefine"
+
+          	if(`grep "GPU_NOT_EXIST" config.v` == "")  then
+                	set sim_define1 = "+define+ARM_UD_MODEL  +notimingcheck" #ARM_UD_MODEL refers fast model for simulation
+		else
+                	set sim_define1 = "+define+ARM_UD_MODEL  +notimingcheck"
+		endif
+	    else
+                set sim_command = "ncverilog +access+r+w +ncv200x +nc64bit +systemverilog_ext+.sv /file/pub/aw1689/digital/netlist/tarmac/ca53univent/build_x86_64/lib/ca53_tarmac_dpi.so  -64bit +ca53_tarmac_enable +define+CORTEXA53_UNIVENT +define+CORTEXA53_UNIVENT_DPI_CAPTURE $pli_command $fsdb_define $project_dir/hdl/ac643/ca53univent/verilog/ca53_follower.sv "
+#	  $project_dir/hdl/ac643/ca53univent/verilog/ca53_follower.sv \
+
+          	if(`grep "GPU_NOT_EXIST" config.v` == "")  then
+	  		set sim_define1  = "+ncnontcglitch +notimingcheck +define+ARM_UD_MODEL "
+		else
+			set sim_define1 = " +ncnontcglitch +notimingcheck +define+ARM_UD_MODEL"
+	  	endif
+            endif
+
+
+	    if !(-e $sim_root/pattern/${testDir}/rama2.hex) then
+		set sim_define2 = " +nowarn+MEMODR $lib_relative"
+	    else
+		set sim_define2 = " +nowarn+MEMODR +define+AR200_TARMAC_ON $lib_relative"
+	    endif
+
+	    if(`grep "GPU_NOT_EXIST" config.v` == "") then
+		set gpu_file = `cat ../hdl/gp200/gpsrc/gp200file`
+	#	set gpu_cmd  = "+ncinput+$sim_root/src/gpu_tcl"
+	    endif
+
+	    set sim_library = "$pre_sim_library"
+	  endif
+
+
+          if(`grep "USB_MAP1" config.v` != "")  then
+	  	set sim_define  = " $sim_define1 $sim_define2 +define+USB_MAP1 "
+	  else
+	  	set sim_define  = " $sim_define1 $sim_define2 "
+          endif
+
+##################################################
+###########  RUN              ############
+##################################################
+	  echo "xx $sim_command"
+          echo " -----------------------------------------------------------"
+          echo " *****  RUNNING IMFORMATION SUMMARY     *****               "
+          echo " -----------------------------------------------------------"
+          echo " project            : $project                              "
+          echo " gold_run           : $gold_run                             "
+          echo " pattern_list_file  : $pattern_list_file                    "  
+          echo " pattern_list       : $pattern_list                         "
+          echo " PATTERN            : $PATTERN                              "
+          echo " cur_sim_dir        : $cur_sim_dir                          "
+          echo " fsdb_define        : $fsdb_define                          "
+          echo " vcs_sim            : $vcs_sim                              "
+          echo " AllTestList        : $AllTestList                          "
+          echo " starttime          : $starttime                            "
+          echo " fsdb_dump          : $fsdb_dump                            "
+          echo " SIM_WAY            : $SIM_WAY                              "
+          echo " post_sim           : $post_sim                             "
+          echo " POST_DIR           : $POST_DIR                             "
+          echo " debussy            : $debussy                              "
+          echo " NC_GUI             : $NC_GUI                               "
+          echo " sim_define         : $sim_define                           "
+          echo " gpu_file           : $gpu_file                             "
+          echo " gpu_cmd            : $gpu_cmd                              "
+          echo " verilogDefine      : $verilogDefine                        "
+          echo " post_log           : $post_log                             "
+          echo " last_sim_dir       : $last_sim_dir                         "
+	  echo " RUN_WITHOUT_COMPILE: $RUN_WITHOUT_COMPILE                  "
+          echo " -----------------------------------------------------------"
+
+
+
+#	  sleep  3s
+
+	  echo  \
+	  $verilogDefine \
+	  $sim_define \
+	  $gpu_cmd \
+          +nctimescale+1ns/10ps \
+  	  +incdir+$project_dir \
+  	  +incdir+$project_dir/hdl \
+  	  +incdir+$project_dir/lib \
+	  +incdir+$project_dir/../swjim \
+	  $sim_ac643_dir \
+	  $sim_ar100_dir \
+	  $include_dir \
+	  +incdir+$SYNOPSYS/dw/sim_ver \
+	  $gpu_file \
+	  $sim_root/src/sim_include.v \
+	  ./sim_model.v \
+	  $sim_library \
+	  $jtag_flist \
+	  > run.f
+
+	  $sim_command -f run.f |tee $sim_root/log/${cur_sim_dir}_${testname}.log
+
+##################################################
+###########  END              ############
+##################################################
+
+###########  show tarmac log    ############
+	if(-e ca53_tarmac.0.0.0.log) then
+ 		tail ca53_tarmac.0.0.0.log
+        	echo ""
+	endif
+
+###########  Generate Log files ###########
+	  set End_time=`date +%m-%d-%H_%M_%S`
+
+	  if ($fsdb_dump == TRUE || $post_sim == 1)then
+	    set fsdb_exist = "fsdb"
+	  else
+	    set fsdb_exist = ""
+	  endif
+
+	if(`grep "Program Finished" "$sim_root/log/${cur_sim_dir}_${testname}.log"` != "" )  then
+                    	echo "$End_time Pass            	        $fsdb_exist	${cur_sim_dir}/${testname}" >> $sim_root/${post_log}_result.log
+		else
+	if(`grep "Program Failed" "$sim_root/log/${cur_sim_dir}_${testname}.log"` != "" ) then
+                    	echo "$End_time failed     ***  	        $fsdb_exist	${cur_sim_dir}/${testname}" >> $sim_root/${post_log}_result.log
+		else
+	if(`grep "Program Unfinished" "$sim_root/log/${cur_sim_dir}_${testname}.log"` != "") then
+                    	echo "$End_time Unfinished ***  	        $fsdb_exist	${cur_sim_dir}/${testname}" >> $sim_root/${post_log}_result.log
+		else
+	if((`grep "ELBERR" "$sim_root/log/${cur_sim_dir}_${testname}.log"` != "") || ((`grep "finish" "$sim_root/log/${cur_sim_dir}_${testname}.log"` == "") && ($post_sim == 1))) then
+			echo "xx env  error"
+			cp $sim_root/log/${cur_sim_dir}_${testname}.log $sim_root/ncverilog.log >& /dev/null	
+			rm LOCK
+			echo "xx unlock ${cur_sim_dir}/${testname} "
+			exit(0)
+		else
+	if(`grep "VLGERR" "$sim_root/log/${cur_sim_dir}_${testname}.log"` != "") then
+			echo "xx syntax error"
+			cp ncverilog.log $sim_root >& /dev/null	
+			rm LOCK
+			echo "xx unlock ${cur_sim_dir}/${testname} "
+			exit(0)
+		else
+			echo "$End_time No result  *** 	        $fsdb_exist	${cur_sim_dir}/${testname}" >> $sim_root/${post_log}_result.log
+			cp $sim_root/log/${cur_sim_dir}_${testname}.log $sim_root/ncverilog.log >& /dev/null	
+			endif
+		endif
+	    endif
+	  endif
+
+###########  copy files for gui/debussy    ############
+	cp run.f $sim_root
+	cp sim_model.v $sim_root
+	cp ncverilog.log $sim_root >& /dev/null	
+    endif
+  end
+endif #if (RUN_WITHOUT_COMPILE)
+##################################################
+# Loop end
+##################################################
+
+###########  gui/debussy/run without compile      ############
+if ($debussy == TRUE) then
+    verdi +2k -top sim -f run.f &
+endif
+
+if ($NC_GUI == TRUE) then
+   ncverilog +access+r+w +ncv200x +nc64bit +gui +loadvpi=/file/pub/aw1650/digital/cpu_model/CortexA7/cortexa7_disass.so:register_cortexa7_disass -f run.f	
+endif
+
+
+if ($RUN_WITHOUT_COMPILE == TRUE) then
+  foreach test ($AllTestList)
+    set last_sim_dir = `cat temp`
+    echo "xx RUN WITHOUT COMPILE in $last_sim_dir"
+    set testDir = ` echo "$test" | sed -e 's/^pattern\///' `
+    if(`grep '/' temp` != "")then
+	cd $last_sim_dir
+        #if !(-e ram.hex)   \cp $sim_root/pattern/${testDir}/ram.hex  ./
+        #if !(-e sdram.hex) \cp $sim_root/pattern/${testDir}/sdram.hex  ./
+        #if !(-e rama*.hex) \cp $sim_root/pattern/${testDir}/rama*.hex  -t ./
+        cp $sim_root/pattern/${testDir}/* -t ./
+	$sim_root/src/draminit.csh
+	echo "xx convert sdram.hex to unix"
+
+	ncverilog -R -64bit +ca53_tarmac_enable
+
+    endif
+  #end foreach
+endif
+
+
+
+
+tail $sim_root/${post_log}_result.log
+endif
+endif
+endif
+
+

@@ -1,0 +1,69 @@
+#---------------------------------------------#
+# author:lzh(DD4)
+#---------------------------------------------#
+# 'make' can easily do it
+#---------------------------------------------#
+
+	cpu_list := $(shell cat inc_ac643_p.v | grep include | grep "\.vp" | sed -e 's/.*\ "//' -e 's/"//'|sort| uniq)
+	dap_list := $(shell cat inc_dap_p.v | grep include | grep "\.vp" | sed -e 's/.*\ "//' -e 's/"//'|sort| uniq)
+	def_source := $(shell awk '{print $$3}' ../ac643/define/mkln.csh|sed -e 's/\.\.\//\.\.\/ac643\//')
+
+	vpath % ../ac643 \
+	:../ac643/ca53biu/verilog \
+	:../ac643/ca53cti/verilog \
+	:../ac643/ca53dcu/verilog \
+	:../ac643/ca53dpu/verilog \
+	:../ac643/ca53etm/verilog \
+	:../ac643/ca53gic/verilog \
+	:../ac643/ca53gov/verilog \
+	:../ac643/ca53ifu/verilog \
+	:../ac643/ca53scu/verilog \
+	:../ac643/ca53stb/verilog \
+	:../ac643/ca53tlb/verilog \
+	:../ac643/cortexa53/verilog \
+	:../ac643/cpu_cfg \
+	:../ac643/cxapbasyncbridge_core2cpu/verilog \
+	:../ac643/cxapbic_2s1m \
+	:../ac643/cxntsasyncbridge_core2cpu/verilog \
+	:../ac643/cxtsd/verilog \
+	:../ac643/gic400/verilog \
+	:../ac643/models/cells/generic \
+	:../ac643/models/rams/s40 \
+	:../ac643/rambist \
+	:../ac643/shared/verilog \
+	:../ac643/cs_top \
+	:../ac643/cxdapahbap/verilog \
+	:../ac643/cxdapapbap/verilog \
+	:../ac643/cxdapbusic_apbahb/verilog \
+	:../ac643/cxdapswjdp/verilog \
+	:../ac643/cxtse/verilog \
+	:../ac643/cxtsintp_ts/verilog \
+
+
+.PHONY:ius
+
+
+ius: $(cpu_list) $(dap_list) def_dest inc_ac643_p.v inc_dap_p.v
+	@cp ../ac643/ac643_def.v ./
+	@cp ../ac643/ac643_subsystem_core.v ./
+	@cp ../ac643/ac643_subsystem.v ./
+
+
+
+$(cpu_list):%.vp:%.v
+	ncprotect -autoprotect -overwrite $<
+
+inc_ac643_p.v : ../ac643/inc_ac643.v
+	cat ../ac643/inc_ac643.v | grep "[a-z]" | sed -e 's/".*\//"/' -e 's/\.v/\.vp/' -e 's/ac643_subsystem\.vp/ac643_subsystem\.v/' -e 's/ac643_subsystem_core\.vp/ac643_subsystem_core\.v/' -e 's/ac643_def\.vp/ac643_def\.v/' >inc_ac643_p.v
+
+$(dap_list):%.vp:%.v
+	ncprotect -autoprotect -overwrite $<
+
+inc_dap_p.v:
+	cat ../ac643/inc_dap.v | grep "[a-z]" | sed -e 's/".*\//"/' -e 's/\.v/\.vp/' > inc_dap_p.v
+
+def_dest:$(def_source)
+	cp $^ ./
+	date >> def_dest
+clean:
+	@-rm 1  *~ *.vp *.log >& /dev/null
